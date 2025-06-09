@@ -1,118 +1,169 @@
-#include <Wire.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include "DFRobot_PH.h"
+#include <EEPROM.h>
 #include <LiquidCrystal_I2C.h>
-#include <SoftwareSerial.h>
-#include "dht.h"
-#include "npkFunction.h"
-#include "pHSensorFunction.h"
-#include "soilMoisture.h"
+#include <Wire.h>
 
+// Soil Moisture Sensor
+#define SOIL_PIN A7
+#define WET_SOIL 277
+#define DRY_SOIL 380
 
-// Enter the I2C address and the dimensions of your LCD here
-LiquidCrystal_I2C lcd(0x27, 16, 2); // Set the LCD Address
+// DS18B20 Temperature Sensor
+#define ONE_WIRE_BUS 31
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
 
+// RS485 NPK Sensor
+#define RE 8
+#define DE 9
+
+const byte nitro[] = {0x01, 0x03, 0x00, 0x1e, 0x00, 0x01, 0xe4, 0x0c};
+const byte phos[]  = {0x01, 0x03, 0x00, 0x1f, 0x00, 0x01, 0xb5, 0xcc};
+const byte pota[]  = {0x01, 0x03, 0x00, 0x20, 0x00, 0x01, 0x85, 0xc0};
+
+byte values[11];
+
+// pH Sensor
+#define PH_PIN A8
+float voltage, phValue, temperature = 25;
+DFRobot_PH ph;
+
+// LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2); // I2C address 0x27
+
+// Helper for Modbus response
+bool readModbusResponse(byte* buffer, byte length) {
+  unsigned long start = millis();
+  byte index = 0;
+  while (index < length && (millis() - start < 1000)) {
+    if (Serial2.available()) {
+      buffer[index++] = Serial2.read();
+    }
+  }
+  return index == length;
+}
+
+// NPK functions
+byte readNutrient(const byte* command) {
+  digitalWrite(DE, HIGH);
+  digitalWrite(RE, HIGH);
+  delay(10);
+
+  Serial2.write(command, 8);
+  Serial2.flush();
+
+  digitalWrite(DE, LOW);
+  digitalWrite(RE, LOW);
+
+  if (readModbusResponse(values, 7)) {
+    return values[4];
+  } else {
+    return 0; // Error or timeout
+  }
+}
 
 void setup() {
-
-  // put your set code here, to run once;
-  dht.begin();
   Serial.begin(9600);
-  modbus.begin(9600);
+  Serial2.begin(9600); // Using Serial2 for RS485
+
+  sensors.begin();
+  ph.begin();
 
   pinMode(RE, OUTPUT);
   pinMode(DE, OUTPUT);
+  digitalWrite(RE, LOW);
+  digitalWrite(DE, LOW);
 
-  //Lcd Setup
   lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Compost Monitor");
+  delay(2000);
   lcd.clear();
-  lcd.backlight(); // Make sure blacklight is on
 
-  // Print a message on both lines of the LCD.
-  lcd.setCursor(2,0); // Set the cursor to character 2 on lines
-  lcd.print("Soil Compost");
-  
-  lcd.setCursor(2,1); // Move cursor to character 2 on line 1
-  lcd.print("Innovaero sdn bh");
-
-  init_pHSensor(); // initlaizer the ph Sensor
-
+  // Optional: single-time pH calibration (comment out if not needed)
+  voltage = analogRead(PH_PIN) / 1024.0 * 5000;
+  ph.calibration(voltage, 25);
 }
 
 void loop() {
-  
-  // put your main code here, to run repeadtedly:
+  // ---- Soil Moisture ----
+  int moisture = analogRead(SOIL_PIN);
+  Serial.print("Soil Moisture: ");
+  Serial.println(moisture);
 
-  // Displaying "Done by Innovaero"
-  lcd.clear();
-  lcd.setCursor(4, 0);
-  lcd.print("Done BY");
-  lcd.setCursor(3,1);
-  lcd.print("INNOVAERO");
-  delay(2000);
+  lcd.setCursor(0, 0);
+  lcd.print("Soil: ");
+  if (moisture < WET_SOIL) {
+    lcd.print("Too Wet     ");
+    Serial.println("Too Wet");
+  } else if (moisture < DRY_SOIL) {
+    lcd.print("Perfect     ");
+    Serial.println("Perfect");
+  } else {
+    lcd.print("Too Dry     ");
+    Serial.println("Too Dry");
+  }
+  delay(3000);
 
-  dhtData();
-  lcd.clear();
+  // ---- Temperature ----
+  sensors.requestTemperatures();
+  float tempC = sensors.getTempCByIndex(0);
+  Serial.print("Temperature: ");
+  Serial.print(tempC);
+  Serial.println(" C");
 
-  //Temperature reading sensor
   lcd.setCursor(0, 0);
   lcd.print("Temp: ");
-  lcd.print(tempData);
-  lcd.print(" ");
-  lcd.write(0xDF);
-  lcd.print( "C" );
+  lcd.print(tempC, 1);
+  lcd.print(" C     ");
+  delay(3000);
 
-  // Humid reading sensor
-  lcd.setCursor(0,1);
-  lcd.print("Humid: ");
-  lcd.print(humidData);
-  lcd.print("%");
+  // ---- NPK ----
+  uint8_t nitrogenVal    = readNutrient(nitro);
+  delay(100);
+  uint8_t phosphorousVal = readNutrient(phos);
+  delay(100);
+  uint8_t potassiumVal   = readNutrient(pota);
+  delay(100);
+
+  Serial.print("Nitrogen: ");
+  Serial.print(nitrogenVal);
+  Serial.println(" mg/kg");
+
+  Serial.print("Phosphorous: ");
+  Serial.print(phosphorousVal);
+  Serial.println(" mg/kg");
+
+  Serial.print("Potassium: ");
+  Serial.print(potassiumVal);
+  Serial.println(" mg/kg");
+
+  lcd.setCursor(0, 0);
+  lcd.print("N:");
+  lcd.print(nitrogenVal);
+  lcd.print(" P:");
+  lcd.print(phosphorousVal);
+  delay(2000);
+  lcd.setCursor(0, 1);
+  lcd.print("K:");
+  lcd.print(potassiumVal);
   delay(2000);
 
-  lcd.clear();
+  // ---- pH ----
+  voltage = analogRead(PH_PIN) / 1024.0 * 5000;
+  phValue = ph.readPH(voltage, tempC);
+  Serial.print("pH: ");
+  Serial.println(phValue, 2);
 
-  // NPK configuration Display
-  byte val1, val2, val3;
+  lcd.setCursor(0, 0);
+  lcd.print("pH Level:      ");
+  lcd.setCursor(0, 1);
+  lcd.print(phValue, 2);
+  lcd.print("         ");
+  delay(3000);
 
-  val1 = nitrogen();
-  delay(250);
-  val2 = phosphorous();
-  delay(250);
-  val3 = potassium();
-  delay(250);
-
-  nitro_st = String(val1);
-  phos_st = String(val2);
-  pota_st = String(val3);
-
-  //Nitrogen reading NPK
-  lcd.clear();
-  lcd.setCursor(0,0);
-  lcd.print("N: ");
-  lcd.print(val2);
-
-  //Potassium reading npk
-  lcd.setCursor(0,1); // column inde, row index
-  lcd.print("K: ");
-  lcd.print(val3);
-  lcd.setCursor(7,1); //Column index,row index
-  lcd.print("mg/kg");
-  delay(2000);
-
-  // Read user input for calibration commands
-  if (Serial.available() > 0) {
-    char user_data[32];
-    size_t user_bytes_received = Serial.readBytesUntil(13, user_data, sizeof(user_data));
-    if (user_bytes_received > 0) {
-      user_data[user_bytes_received] = '\0'; // Null-terminate the string
-      parse_pHCommand(user_data);
-    }
-  }
-
-  // Display pH value on the LCD
-  float pHValue = read_pH();
-  lcd.clear();
-    lcd.setCursor(0, 0);
-  lcd.print("pH: ");
-  lcd.print(pHValue);
-  delay(2000);
-
+  Serial.println("------------------------------");
 }
