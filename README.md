@@ -20,3 +20,9 @@ P.s this github manual are not yet finished yet, some changes are will be update
 
 --- The System should work ---
 Have a nice gardening :)
+
+# New Update - 9th June 2025
+Apperently, I just found out the code I create have a lot of errors. Some of the sensors especially the npk are always getting 255 value or 0 which is logically error.
+
+However I put my latest code that I wrote down, but still in progress to do it.
+Feel free to use it.
